@@ -1,0 +1,11 @@
+[Unit]
+Description=Applica le project quota (init-cloud-machine) al primo boot con quota attiva
+After=local-fs.target
+ConditionPathExists=/etc/init-cloud-machine/quota.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/init-cloud-machine-apply-quota.sh
+
+[Install]
+WantedBy=multi-user.target

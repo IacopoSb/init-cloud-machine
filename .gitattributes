@@ -1,0 +1,3 @@
+# Repo di deploy Linux: gli script sono eseguiti via `curl | bash`, i CRLF li
+# romperebbero. Normalizza tutti i file di testo a LF (nel repo e in checkout).
+* text=auto eol=lf

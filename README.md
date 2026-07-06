@@ -2,7 +2,11 @@
 
 Questo repository contiene lo script di inizializzazione delle macchine cloud (one-line-install).
 
-Per eseguire: sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/IacopoSb/init-cloud-machine/main/init.sh)"
+Per eseguire (come root):
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/IacopoSb/init-cloud-machine/main/init.sh)"
+```
 
 Lo script scarica a runtime gli asset da `assets/` del repo (README.txt e server-manager.sh).
 

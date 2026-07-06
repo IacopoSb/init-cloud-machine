@@ -1,27 +1,24 @@
 Server inizializzato da init.sh (v%%VERSION%%)
 Utente: %%USER%%
 
-Struttura cartelle in %%HOME%%:
+STRUTTURA CARTELLE (%%HOME%%)
+  apps/     Stack Docker Compose - una sottocartella per stack (es. apps/beszel/)
+  data/     Dati persistenti dei container
+  logs/     Log applicativi
+  backup/   Backup locali
 
-  apps/     Stack Docker Compose delle applicazioni (una sottocartella per stack).
-            Es. apps/beszel/  -> agent di monitoraggio Beszel.
-            Nessuna project quota.
+DOCKER (rootless, come utente %%USER%%)
+  Socket: DOCKER_HOST=unix:///run/user/%%UID%%/docker.sock  (gia' in ~/.bashrc)
+  Deploy di uno stack:
+    mkdir -p ~/apps/<nome>
+    cd ~/apps/<nome>
+    # crea qui docker-compose.yml
+    docker compose up -d
 
-  data/     Dati persistenti dei container/applicazioni.
-            Una sottocartella per stack. Project quota (hard limit) opzionale.
+GESTIONE  ->  ./server-manager.sh
+  Gestisce gli stack Docker in esecuzione, le quote disco (con sudo) e i
+  login ai registry Docker; mostra hardware e uso delle cartelle.
 
-  logs/     Log applicativi.
-            Una sottocartella per stack. Project quota (hard limit) opzionale.
-
-  backup/   Backup locali. Nessuna project quota.
-
-File in home:
-
-  README.txt          Questo file.
-  server-manager.sh   Info/gestione del server (hardware, docker per stack, uso cartelle).
-                      Uso:  ./server-manager.sh
-
-Note:
-  - Docker gira in modalità ROOTLESS come utente %%USER%% con binari di sistema
-    (DOCKER_HOST=unix:///run/user/%%UID%%/docker.sock).
-  - Accesso SSH: solo tramite chiave (password e root login disabilitati).
+NOTE
+  - Accesso SSH: solo tramite Warpgate (bastion). Accesso diretto con
+    password e login di root disabilitati; sudo con password.

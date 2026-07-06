@@ -12,6 +12,15 @@ Lo script scarica a runtime gli asset da `assets/` del repo (README.txt e server
 
 ## Changelog
 
+### 1.1.0
+
+Supporto base a **RHEL/AlmaLinux** (oltre a Debian/Ubuntu): rilevamento della
+distribuzione, gruppo admin `sudo`/`wheel`, installazione pacchetti astratta
+(`apt`/`dnf`). Su AlmaLinux vengono eseguite le parti base — **utente `mexage`,
+hardening SSH, struttura cartelle, README** — mentre **Docker, project quota,
+Beszel e Synology restano Debian-only** e vengono saltati (gestione futura, es.
+Podman). `server-manager.sh` non viene installato su AlmaLinux.
+
 ### 1.0.0
 
 Prima versione. Bootstrap di una Ubuntu/Debian barebone (va eseguito come root).

@@ -23,7 +23,7 @@ set -euo pipefail
 # Configurazione.
 # ---------------------------------------------------------------------------
 # Versione di questo script (riportata anche nel README.txt generato).
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.1.0"
 
 # Base URL raw del repo da cui scaricare gli asset (README.txt, server-manager.sh).
 ASSETS_BASE="https://raw.githubusercontent.com/IacopoSb/init-cloud-machine/main"
@@ -52,7 +52,41 @@ die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 # significherebbe restare tagliati fuori.
 [ "${#SSH_PUBLIC_KEYS[@]}" -gt 0 ] || die "Nessuna chiave SSH configurata in SSH_PUBLIC_KEYS: mi rifiuto di disabilitare l'auth via password (rischio lockout)."
 
-log "Bootstrap avviato. Utente target: '$TARGET_USER'."
+# ---------------------------------------------------------------------------
+# 0b. Rilevamento distribuzione + astrazione pacchetti.
+# ---------------------------------------------------------------------------
+# Le parti base (utente, hardening SSH, cartelle, README) girano su Debian/Ubuntu
+# e RHEL/AlmaLinux. Le parti Docker/quota/Beszel/Synology restano Debian-only e
+# vengono saltate sulle altre distribuzioni.
+[ -r /etc/os-release ] || die "/etc/os-release assente: distribuzione non riconoscibile."
+. /etc/os-release
+case "${ID:-}" in
+  ubuntu|debian) DISTRO_FAMILY="debian" ;;
+  almalinux|rocky|rhel|centos|fedora) DISTRO_FAMILY="rhel" ;;
+  *)
+    case " ${ID_LIKE:-} " in
+      *debian*) DISTRO_FAMILY="debian" ;;
+      *rhel*|*fedora*) DISTRO_FAMILY="rhel" ;;
+      *) die "Distribuzione non supportata: '${ID:-?}' (attese Debian/Ubuntu o RHEL/AlmaLinux)." ;;
+    esac ;;
+esac
+
+# Gruppo admin: 'sudo' su Debian/Ubuntu, 'wheel' su RHEL/AlmaLinux.
+if [ "$DISTRO_FAMILY" = "debian" ]; then ADMIN_GROUP="sudo"; else ADMIN_GROUP="wheel"; fi
+
+# Installazione pacchetti astratta per famiglia.
+pkg_refresh() {
+  if [ "$DISTRO_FAMILY" = "debian" ]; then apt-get update -y; else dnf -y makecache || true; fi
+}
+pkg_install() {
+  if [ "$DISTRO_FAMILY" = "debian" ]; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+  else
+    dnf install -y "$@"
+  fi
+}
+
+log "Bootstrap avviato. Distribuzione: ${PRETTY_NAME:-$ID} (famiglia $DISTRO_FAMILY). Utente target: '$TARGET_USER'."
 
 # ---------------------------------------------------------------------------
 # 1. Hostname interattivo.
@@ -83,16 +117,9 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Pacchetti prerequisiti (unattended).
 # ---------------------------------------------------------------------------
-log "Installo i pacchetti prerequisiti..."
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y \
-  ca-certificates \
-  curl \
-  sudo \
-  uidmap \
-  dbus-user-session \
-  slirp4netns
+log "Installo i pacchetti prerequisiti di base..."
+pkg_refresh
+pkg_install ca-certificates curl sudo
 
 # ---------------------------------------------------------------------------
 # 3. Utente target.
@@ -102,7 +129,7 @@ if id "$TARGET_USER" >/dev/null 2>&1; then
 else
   log "Creo l'utente '$TARGET_USER' con home e shell bash."
   useradd --create-home --shell /bin/bash "$TARGET_USER"
-  usermod -aG sudo "$TARGET_USER"
+  usermod -aG "$ADMIN_GROUP" "$TARGET_USER"
 
   # sudo con password (niente NOPASSWD): imposto subito la password, richiesta
   # da sudo. L'accesso SSH resta comunque solo-a-chiave. Prompt con conferma.
@@ -110,7 +137,7 @@ else
   if ! passwd "$TARGET_USER"; then
     warn "Password non impostata: fallo a mano con 'passwd $TARGET_USER'. Senza password '$TARGET_USER' non potrà usare sudo."
   fi
-  log "Utente '$TARGET_USER' creato (membro del gruppo sudo, con password)."
+  log "Utente '$TARGET_USER' creato (gruppo '$ADMIN_GROUP', con password)."
 fi
 
 # Dati dell'utente target usati nel resto dello script.
@@ -191,6 +218,30 @@ systemctl list-unit-files 2>/dev/null | grep -q '^ssh\.service' || SSH_SERVICE="
 
 log "Riavvio $SSH_SERVICE per applicare l'hardening."
 systemctl restart "$SSH_SERVICE"
+
+# ---------------------------------------------------------------------------
+# 5b. Cartelle di lavoro dell'utente (tutte le distribuzioni).
+# ---------------------------------------------------------------------------
+log "Creo le cartelle di lavoro in $TARGET_HOME."
+for d in apps data logs backup; do
+  mkdir -p "$TARGET_HOME/$d"
+done
+chown -R "$TARGET_USER:$TARGET_USER" \
+  "$TARGET_HOME/apps" "$TARGET_HOME/data" "$TARGET_HOME/logs" "$TARGET_HOME/backup"
+
+# Default per il riepilogo (sovrascritti dalle sezioni Debian-only qui sotto).
+DOCKER_SUMMARY="non installato (solo Debian/Ubuntu in questa versione)"
+SYNO_STATUS="non applicabile su $ID"
+BESZEL_STATUS="non applicabile su $ID"
+QUOTA_SUMMARY="non applicabile su $ID"
+QUOTA_REBOOT=0
+
+# ===========================================================================
+# Sezioni Docker / quota / Beszel / Synology: SOLO Debian/Ubuntu (v1.1.0).
+# Su RHEL/AlmaLinux vengono saltate (gestione futura, es. Podman).
+# ===========================================================================
+if [ "$DISTRO_FAMILY" = "debian" ]; then
+pkg_install uidmap dbus-user-session slirp4netns
 
 # ---------------------------------------------------------------------------
 # 6. Moduli kernel per il networking rootless (iptables/nftables).
@@ -323,6 +374,8 @@ fi
 run_as_target docker compose version >/dev/null 2>&1 \
   || warn "'docker compose' non disponibile: verifica il pacchetto docker-compose-plugin."
 
+DOCKER_SUMMARY="rootless per $TARGET_USER, DOCKER_HOST=$DOCKER_SOCK"
+
 # ---------------------------------------------------------------------------
 # 9. Synology Active Backup for Business Agent.
 # ---------------------------------------------------------------------------
@@ -450,21 +503,21 @@ case "${SYNO_ANS:-N}" in
     ;;
 esac
 
+if [ "$SYNO_SKIPPED" -eq 1 ]; then
+  SYNO_STATUS="non installato (scelta) — usa File Server sul NAS"
+elif [ "$SYNO_OK" -eq 1 ]; then
+  SYNO_STATUS="installato (verifica: sudo abb-cli -s)"
+else
+  SYNO_STATUS="installazione FALLITA — riprova a mano"
+fi
+
 # ---------------------------------------------------------------------------
-# 10. Cartelle di lavoro di mexage + project quota (ext4, hard limit).
+# 10. Project quota ext4 (hard limit) sulle cartelle di lavoro.
 # ---------------------------------------------------------------------------
 # La quota (hard limit) viene chiesta interattivamente per tutte le cartelle
-# (apps, data, logs, backup): vuoto = nessuna quota. Usiamo la project quota ext4:
-# niente modifiche a /etc/fstab, attivazione automatica al mount.
-log "Creo le cartelle di lavoro in $TARGET_HOME."
-for d in apps data logs backup; do
-  mkdir -p "$TARGET_HOME/$d"
-done
-chown -R "$TARGET_USER:$TARGET_USER" \
-  "$TARGET_HOME/apps" "$TARGET_HOME/data" "$TARGET_HOME/logs" "$TARGET_HOME/backup"
-
-QUOTA_REBOOT=0
-apt-get install -y quota
+# (apps, data, logs, backup): vuoto = nessuna quota. Le cartelle sono già create
+# (sezione 5b). Project quota ext4: niente modifiche a /etc/fstab.
+pkg_install quota
 
 QUOTA_MNT="$(findmnt -no TARGET --target "$TARGET_HOME")"
 QUOTA_DEV="$(findmnt -no SOURCE --target "$TARGET_HOME")"
@@ -542,10 +595,12 @@ setup_quota_boot() {
 
 if [ "$QUOTA_FSTYPE" != "ext4" ]; then
   warn "Filesystem di $TARGET_HOME è '$QUOTA_FSTYPE', non ext4: cartelle create ma project quota saltata."
+  QUOTA_SUMMARY="saltata (fs '$QUOTA_FSTYPE' non ext4)"
 elif quota_is_active; then
   log "Project quota già attiva su $QUOTA_MNT: chiedo e applico i limiti."
   prompt_quota_sizes
   apply_quota_conf
+  QUOTA_SUMMARY="attive (verifica: sudo repquota -P $QUOTA_MNT)"
 else
   # Feature quota non attiva: su ext4 si abilita solo da smontato → la abilitiamo
   # al boot (modulo dracut) e applichiamo i limiti al primo boot (servizio oneshot).
@@ -553,8 +608,10 @@ else
   prompt_quota_sizes
   if setup_quota_boot; then
     QUOTA_REBOOT=1
+    QUOTA_SUMMARY="configurata, applicata automaticamente al prossimo REBOOT"
   else
     warn "Preparazione della quota al boot non riuscita: le quote non verranno applicate."
+    QUOTA_SUMMARY="preparazione FALLITA"
   fi
 fi
 
@@ -605,6 +662,12 @@ else
   warn "Completa HUB_URL/TOKEN/KEY nel file e avvia con: cd $BESZEL_DIR && docker compose up -d"
 fi
 
+# ===========================================================================
+else
+  log "Distribuzione '$ID': Docker, quota, Beszel e Synology saltati (parti Debian-only in questa versione)."
+fi
+# ===========================================================================
+
 # ---------------------------------------------------------------------------
 # 12. README.txt e server-manager.sh (scaricati dagli asset del repo).
 # ---------------------------------------------------------------------------
@@ -625,49 +688,41 @@ else
   warn "Download di README.txt fallito ($ASSETS_BASE/assets/README.txt)."
 fi
 
-if curl -fsSL "$ASSETS_BASE/assets/server-manager.sh" -o "$TARGET_HOME/server-manager.sh"; then
-  chmod +x "$TARGET_HOME/server-manager.sh"
-  chown "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/server-manager.sh"
+if [ "$DISTRO_FAMILY" = "debian" ]; then
+  if curl -fsSL "$ASSETS_BASE/assets/server-manager.sh" -o "$TARGET_HOME/server-manager.sh"; then
+    chmod +x "$TARGET_HOME/server-manager.sh"
+    chown "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/server-manager.sh"
+  else
+    warn "Download di server-manager.sh fallito ($ASSETS_BASE/assets/server-manager.sh)."
+  fi
 else
-  warn "Download di server-manager.sh fallito ($ASSETS_BASE/assets/server-manager.sh)."
+  log "server-manager.sh non installato su $ID (gestione container/Podman in una versione futura)."
 fi
 
 # ---------------------------------------------------------------------------
 # Fine.
 # ---------------------------------------------------------------------------
-if [ "$SYNO_SKIPPED" -eq 1 ]; then
-  SYNO_STATUS="non installato (scelta) — usa File Server sul NAS"
-elif [ "$SYNO_OK" -eq 1 ]; then
-  SYNO_STATUS="installato (verifica: sudo abb-cli -s)"
-else
-  SYNO_STATUS="installazione FALLITA — riprova a mano"
-fi
 cat <<EOF
 
 $(log "Bootstrap completato.")
 
   Versione script ....... $SCRIPT_VERSION
+  Distribuzione ......... ${PRETTY_NAME:-$ID} (famiglia $DISTRO_FAMILY)
   Hostname .............. $NEW_HOSTNAME
-  Utente target ......... $TARGET_USER (uid $TARGET_UID), gruppo sudo, con password
+  Utente target ......... $TARGET_USER (uid $TARGET_UID), gruppo $ADMIN_GROUP, con password
   authorized_keys ....... $AUTH_KEYS (${#SSH_PUBLIC_KEYS[@]} chiave/i)
   SSH hardening ......... password auth OFF, root login OFF
-  Docker ................ rootless per $TARGET_USER, DOCKER_HOST=$DOCKER_SOCK
+  Docker ................ $DOCKER_SUMMARY
   Synology ABB agent .... $SYNO_STATUS
   Beszel agent .......... $BESZEL_STATUS
-  Cartelle mexage ....... apps, data, logs, backup in $TARGET_HOME
-  README / info ......... $TARGET_HOME/README.txt, $TARGET_HOME/server-manager.sh
-  Project quota ......... $( [ "$QUOTA_REBOOT" -eq 1 ] && echo "configurata, RICHIEDE REBOOT + ri-esecuzione" || echo "attive (verifica: sudo repquota -P $QUOTA_MNT)" )
+  Cartelle utente ....... apps, data, logs, backup in $TARGET_HOME
+  README ................ $TARGET_HOME/README.txt
+  Project quota ......... $QUOTA_SUMMARY
 
 ATTENZIONE (rischio lockout):
   L'accesso SSH via PASSWORD e il login di ROOT sono ora DISABILITATI.
   NON chiudere questa sessione finché non hai verificato, da un'ALTRA shell,
-  di riuscire ad accedere via chiave come '$TARGET_USER':
-
-      ssh $TARGET_USER@<indirizzo-di-questa-macchina>
-
-  Come '$TARGET_USER' (nuova shell/login), verifica Docker:
-
-      docker run --rm hello-world
+  di riuscire ad accedere via chiave come '$TARGET_USER'.
 
 EOF
 
@@ -675,6 +730,6 @@ if [ "$QUOTA_REBOOT" -eq 1 ]; then
   warn "=============================================================="
   warn " REBOOT necessario per attivare le project quota ext4."
   warn "   sudo reboot"
-  warn " Dopo il riavvio, ri-esegui questo script per impostare le quote."
+  warn " Le quote verranno applicate AUTOMATICAMENTE al riavvio (nessun re-run)."
   warn "=============================================================="
 fi

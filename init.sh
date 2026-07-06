@@ -33,7 +33,7 @@ TARGET_USER="mexage"
 
 # Chiavi pubbliche SSH da autorizzare per TARGET_USER (una per riga).
 SSH_PUBLIC_KEYS=(
-  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHjNMVCGl1EUhbnfEuYWA4dWDZVqZH4WwlN+6Kh7Cmgd iacopo.sbalchiero"
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGF1zvqfiPqcP5sXTOHj5yxcybA00aoxiRXG/xurU3q6 warpgate"
 )
 
 # ---------------------------------------------------------------------------

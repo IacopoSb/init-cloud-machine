@@ -23,7 +23,7 @@ set -euo pipefail
 # Configurazione.
 # ---------------------------------------------------------------------------
 # Versione di questo script (riportata anche nel README.txt generato).
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.0"
 
 # Base URL raw del repo da cui scaricare gli asset (README.txt, server-manager.sh).
 ASSETS_BASE="https://raw.githubusercontent.com/IacopoSb/init-cloud-machine/main"
@@ -150,15 +150,74 @@ TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 grep -q "^${TARGET_USER}:" /etc/subuid || usermod --add-subuids 100000-165535 "$TARGET_USER"
 grep -q "^${TARGET_USER}:" /etc/subgid || usermod --add-subgids 100000-165535 "$TARGET_USER"
 
+# Motore container per famiglia: Docker (Debian/Ubuntu) o Podman (RHEL/AlmaLinux).
+# CONTAINER_SOCK è il socket Docker-API (Podman ne espone uno compatibile).
+if [ "$DISTRO_FAMILY" = "debian" ]; then
+  CONTAINER_ENGINE="docker"
+  CONTAINER_SOCK="/run/user/$TARGET_UID/docker.sock"
+  COMPOSE_CMD="docker compose"
+else
+  CONTAINER_ENGINE="podman"
+  CONTAINER_SOCK="/run/user/$TARGET_UID/podman/podman.sock"
+  COMPOSE_CMD="podman compose"
+fi
+
 # Esegue un comando come TARGET_USER con l'ambiente systemd --user corretto.
 run_as_target() {
   sudo -u "$TARGET_USER" \
     HOME="$TARGET_HOME" \
     XDG_RUNTIME_DIR="/run/user/$TARGET_UID" \
     DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$TARGET_UID/bus" \
-    DOCKER_HOST="unix:///run/user/$TARGET_UID/docker.sock" \
+    DOCKER_HOST="unix://$CONTAINER_SOCK" \
     PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
     "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Beszel agent (condiviso Docker/Podman): compose in ~/apps/beszel, modalità
+# WebSocket. Usa CONTAINER_SOCK e COMPOSE_CMD del motore attivo.
+# ---------------------------------------------------------------------------
+setup_beszel() {
+  local dir="$TARGET_HOME/apps/beszel"
+  mkdir -p "$dir"
+  log "Configuro l'agent Beszel (vuoto = scrivo il compose senza avviarlo)."
+  read -rp "  Beszel HUB_URL [https://status.mexage.net]: " BESZEL_HUB_URL
+  BESZEL_HUB_URL="${BESZEL_HUB_URL:-https://status.mexage.net}"
+  read -rp "  Beszel TOKEN: " BESZEL_TOKEN
+  read -rp "  Beszel KEY (chiave pubblica hub, ssh-ed25519 ...): " BESZEL_KEY
+
+  cat > "$dir/docker-compose.yml" <<EOF
+services:
+  beszel-agent:
+    image: docker.io/henrygd/beszel-agent
+    container_name: beszel-agent
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./beszel_agent_data:/var/lib/beszel-agent
+      - $CONTAINER_SOCK:/var/run/docker.sock:ro
+    environment:
+      LISTEN: 45876
+      HUB_URL: "${BESZEL_HUB_URL}"
+      TOKEN: "${BESZEL_TOKEN}"
+      KEY: "${BESZEL_KEY}"
+EOF
+  chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/apps"
+
+  if [ -n "$BESZEL_HUB_URL" ] && [ -n "$BESZEL_TOKEN" ] && [ -n "$BESZEL_KEY" ]; then
+    log "Avvio l'agent Beszel ($COMPOSE_CMD up -d)."
+    if run_as_target $COMPOSE_CMD -f "$dir/docker-compose.yml" up -d; then
+      BESZEL_STATUS="agent avviato ($dir, $CONTAINER_ENGINE)"
+      log "Agent Beszel avviato."
+    else
+      BESZEL_STATUS="avvio FALLITO — vedi '$COMPOSE_CMD -f $dir/docker-compose.yml logs'"
+      warn "Avvio dell'agent Beszel fallito."
+    fi
+  else
+    BESZEL_STATUS="compose scritto con placeholder — completa e avvia in $dir"
+    warn "Dati Beszel incompleti: compose scritto in $dir con i campi vuoti."
+    warn "Completa HUB_URL/TOKEN/KEY nel file e avvia con: cd $dir && $COMPOSE_CMD up -d"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -616,55 +675,47 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 11. Beszel agent (Docker, modalità WebSocket verso l'hub).
+# 11. Beszel agent (motore Docker attivo).
 # ---------------------------------------------------------------------------
-# L'agent dial-out verso l'hub (HUB_URL) autenticandosi con TOKEN + KEY: nessuna
-# porta in ingresso da aprire. Compose in ~/apps/beszel; parte via docker rootless.
-BESZEL_DIR="$TARGET_HOME/apps/beszel"
-mkdir -p "$BESZEL_DIR"
-
-log "Configuro l'agent Beszel (vuoto = scrivo il compose senza avviarlo)."
-read -rp "  Beszel HUB_URL [https://status.mexage.net]: " BESZEL_HUB_URL
-BESZEL_HUB_URL="${BESZEL_HUB_URL:-https://status.mexage.net}"
-read -rp "  Beszel TOKEN: " BESZEL_TOKEN
-read -rp "  Beszel KEY (chiave pubblica hub, ssh-ed25519 ...): " BESZEL_KEY
-
-cat > "$BESZEL_DIR/docker-compose.yml" <<EOF
-services:
-  beszel-agent:
-    image: henrygd/beszel-agent
-    container_name: beszel-agent
-    restart: unless-stopped
-    network_mode: host
-    volumes:
-      - ./beszel_agent_data:/var/lib/beszel-agent
-      - /run/user/$TARGET_UID/docker.sock:/var/run/docker.sock:ro
-    environment:
-      LISTEN: 45876
-      HUB_URL: "${BESZEL_HUB_URL}"
-      TOKEN: "${BESZEL_TOKEN}"
-      KEY: "${BESZEL_KEY}"
-EOF
-chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/apps"
-
-if [ -n "$BESZEL_HUB_URL" ] && [ -n "$BESZEL_TOKEN" ] && [ -n "$BESZEL_KEY" ]; then
-  log "Avvio l'agent Beszel (docker compose up -d)."
-  if run_as_target docker compose -f "$BESZEL_DIR/docker-compose.yml" up -d; then
-    BESZEL_STATUS="agent avviato ($BESZEL_DIR)"
-    log "Agent Beszel avviato."
-  else
-    BESZEL_STATUS="avvio FALLITO — vedi 'docker compose -f $BESZEL_DIR/docker-compose.yml logs'"
-    warn "Avvio dell'agent Beszel fallito."
-  fi
-else
-  BESZEL_STATUS="compose scritto con placeholder — completa e avvia in $BESZEL_DIR"
-  warn "Dati Beszel incompleti: compose scritto in $BESZEL_DIR con i campi vuoti."
-  warn "Completa HUB_URL/TOKEN/KEY nel file e avvia con: cd $BESZEL_DIR && docker compose up -d"
-fi
+setup_beszel
 
 # ===========================================================================
-else
-  log "Distribuzione '$ID': Docker, quota, Beszel e Synology saltati (parti Debian-only in questa versione)."
+elif [ "$DISTRO_FAMILY" = "rhel" ]; then
+  # -------------------------------------------------------------------------
+  # Motore container su RHEL/AlmaLinux: PODMAN rootless (parità con Docker).
+  # NOTA: percorso NON ancora testato sul vivo (validazione in sospeso).
+  # -------------------------------------------------------------------------
+  log "Installo Podman (rootless) per '$TARGET_USER'."
+  pkg_install podman podman-docker
+  # Provider per 'podman compose' (necessario a Beszel).
+  pkg_install podman-compose 2>/dev/null || warn "podman-compose non installato: 'podman compose' potrebbe non funzionare."
+
+  # Limite dimensione log dei container (containers.conf dell'utente, ~50 MB).
+  mkdir -p "$TARGET_HOME/.config/containers"
+  cat > "$TARGET_HOME/.config/containers/containers.conf" <<'EOF'
+[containers]
+log_driver = "journald"
+log_size_max = 52428800
+EOF
+  chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config"
+
+  # Linger + socket rootless (API Docker-compat) via systemd --user.
+  log "Abilito il linger e il socket Podman rootless per '$TARGET_USER'."
+  loginctl enable-linger "$TARGET_USER"
+  for _ in $(seq 1 10); do [ -d "/run/user/$TARGET_UID" ] && break; sleep 1; done
+  run_as_target systemctl --user enable --now podman.socket 2>/dev/null \
+    || warn "podman.socket non avviato ora; partirà al prossimo login/boot."
+
+  # DOCKER_HOST verso il socket Podman (per compose e Beszel).
+  BASHRC="$TARGET_HOME/.bashrc"
+  touch "$BASHRC"
+  grep -qxF "export DOCKER_HOST=unix://$CONTAINER_SOCK" "$BASHRC" 2>/dev/null || \
+    printf '# --- Podman rootless (init.sh) ---\nexport DOCKER_HOST=unix://%s\n' "$CONTAINER_SOCK" >> "$BASHRC"
+  chown "$TARGET_USER:$TARGET_USER" "$BASHRC"
+
+  DOCKER_SUMMARY="podman rootless per $TARGET_USER, DOCKER_HOST=unix://$CONTAINER_SOCK"
+
+  setup_beszel
 fi
 # ===========================================================================
 
@@ -712,7 +763,7 @@ $(log "Bootstrap completato.")
   Utente target ......... $TARGET_USER (uid $TARGET_UID), gruppo $ADMIN_GROUP, con password
   authorized_keys ....... $AUTH_KEYS (${#SSH_PUBLIC_KEYS[@]} chiave/i)
   SSH hardening ......... password auth OFF, root login OFF
-  Docker ................ $DOCKER_SUMMARY
+  Motore container ...... $DOCKER_SUMMARY
   Synology ABB agent .... $SYNO_STATUS
   Beszel agent .......... $BESZEL_STATUS
   Cartelle utente ....... apps, data, logs, backup in $TARGET_HOME

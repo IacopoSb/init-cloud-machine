@@ -12,6 +12,15 @@ Lo script scarica a runtime gli asset da `assets/` del repo (README.txt e server
 
 ## Changelog
 
+### 1.2.0
+
+Su **AlmaLinux/RHEL** il motore container è **Podman** (al posto di Docker),
+con parità di funzioni: Podman rootless per `mexage`, socket compat (API Docker),
+`podman compose`, agent **Beszel** (via il socket Podman) e limite dimensione
+log dei container (`containers.conf`). Su Debian/Ubuntu resta Docker. La project
+quota su AlmaLinux (root XFS) resta rimandata. **NOTA: il percorso Podman non è
+ancora stato validato end-to-end sul vivo.**
+
 ### 1.1.0
 
 Supporto base a **RHEL/AlmaLinux** (oltre a Debian/Ubuntu): rilevamento della

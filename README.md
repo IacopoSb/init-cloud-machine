@@ -12,6 +12,27 @@ Lo script scarica a runtime gli asset da `assets/` del repo (README.txt e server
 
 ## Changelog
 
+### 1.3.0
+
+Nuova sezione **1b — DNS over TLS**. Il resolver assegnato via DHCP da OVH
+(`213.186.33.99`) risponde **SERVFAIL** su una quota rilevante delle query per la
+zona `mexage.net` (misurato il 04/08/2026: 89 fallimenti su 280, contro 0 su 280
+verso Cloudflare) ed è l'**unico** resolver configurato, quindi senza fallback.
+Lo script lo sostituisce con tre resolver **DNS over TLS** su due provider
+(`DNS_TLS_SERVERS`, configurabile in testa): drop-in
+`/etc/systemd/resolved.conf.d/99-dns-over-tls.conf` più
+`/etc/netplan/99-dns-over-tls.yaml` con `use-dns: false`, che impedisce al DHCP di
+reimporre il proprio resolver al boot. Si usa DoT e non un semplice secondario in
+chiaro perché su OVH l'egress **UDP/53** verso resolver terzi può essere filtrato
+(protezione anti-amplificazione), mentre la **853/TCP** del DoT no.
+
+Due guard prima di toccare qualcosa — 853/TCP raggiungibile, e search domain del
+link che non risolva nomi interni — più validazione con `netplan generate` e
+verifica finale con **rollback automatico**: in ogni caso di dubbio la
+configurazione del DHCP resta invariata, come già fa la sezione 5 con `sshd -t`.
+Non viene eseguito `netplan apply`, per non riapplicare la rete sotto la sessione
+SSH: l'effetto immediato arriva da `resolvectl`, il file netplan serve al boot.
+
 ### 1.2.0
 
 Su **AlmaLinux/RHEL** il motore container è **Podman** (al posto di Docker),

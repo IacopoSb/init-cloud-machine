@@ -4,6 +4,7 @@
 #
 # Cosa fa (in ordine):
 #   1. Chiede interattivamente il nuovo hostname e lo imposta.
+#  1b. Configura la risoluzione DNS via DNS over TLS (scavalca il resolver DHCP).
 #   2. Installa i pacchetti prerequisiti (unattended).
 #   3. Crea l'utente target 'mexage' (se manca) con sudo e password.
 #   4. Inserisce le chiavi pubbliche SSH in authorized_keys di 'mexage'.
@@ -23,7 +24,7 @@ set -euo pipefail
 # Configurazione.
 # ---------------------------------------------------------------------------
 # Versione di questo script (riportata anche nel README.txt generato).
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.3.0"
 
 # Base URL raw del repo da cui scaricare gli asset (README.txt, server-manager.sh).
 ASSETS_BASE="https://raw.githubusercontent.com/IacopoSb/init-cloud-machine/main"
@@ -34,6 +35,15 @@ TARGET_USER="mexage"
 # Chiavi pubbliche SSH da autorizzare per TARGET_USER (una per riga).
 SSH_PUBLIC_KEYS=(
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGF1zvqfiPqcP5sXTOHj5yxcybA00aoxiRXG/xurU3q6 warpgate"
+)
+
+# Resolver usati al posto di quello fornito dal DHCP (vedi sezione 1b).
+# Formato 'IP#nome-certificato': il nome serve a validare il certificato TLS.
+# Due provider distinti, per non dipendere dalla disponibilità di uno solo.
+DNS_TLS_SERVERS=(
+  "1.1.1.1#cloudflare-dns.com"
+  "1.0.0.1#cloudflare-dns.com"
+  "8.8.8.8#dns.google"
 )
 
 # ---------------------------------------------------------------------------
@@ -113,6 +123,119 @@ if [ "$NEW_HOSTNAME" != "$CURRENT_HOSTNAME" ]; then
 else
   log "Hostname invariato ('$CURRENT_HOSTNAME')."
 fi
+
+# ---------------------------------------------------------------------------
+# 1b. DNS: risoluzione via DNS over TLS.
+# ---------------------------------------------------------------------------
+# Il resolver che OVH assegna via DHCP (213.186.33.99) risponde SERVFAIL su una
+# quota rilevante delle query per la zona mexage.net: misurato il 04/08/2026,
+# 89 fallimenti su 280 query contro 0 su 280 verso Cloudflare, a parità di
+# timeout. Ed è l'UNICO resolver configurato, quindi non esiste fallback: il
+# risultato sono risoluzioni che falliscono a intermittenza, che sui monitor
+# appaiono come servizio "giù" e altrove come timeout o 502 sporadici.
+#
+# Non basta aggiungere un secondario in chiaro: su OVH l'egress UDP/53 verso
+# resolver terzi può essere filtrato (protezione anti-amplificazione) e in quel
+# caso il secondario è inerte. DNS over TLS viaggia su 853/TCP, che il filtro
+# non tocca.
+#
+# NON eseguiamo 'netplan apply': lo script gira su una sessione SSH e riapplicare
+# la configurazione di rete è un rischio che non serve correre. L'effetto
+# immediato lo diamo con resolvectl; il file netplan rende la modifica
+# persistente al prossimo boot.
+DNS_SUMMARY="non modificato"
+
+setup_dns_over_tls() {
+  local dropin="/etc/systemd/resolved.conf.d/99-dns-over-tls.conf"
+  local netplan_file="/etc/netplan/99-dns-over-tls.yaml"
+  local iface domain entry reachable=0
+
+  command -v netplan >/dev/null 2>&1 || {
+    warn "netplan assente: DNS lasciato come da DHCP."
+    DNS_SUMMARY="saltato (netplan assente)"; return 0; }
+  [ "$(systemctl is-active systemd-resolved 2>/dev/null)" = "active" ] || {
+    warn "systemd-resolved non attivo: DNS lasciato come da DHCP."
+    DNS_SUMMARY="saltato (systemd-resolved non attivo)"; return 0; }
+
+  iface="$(ip route show default | awk '/default/ {print $5; exit}')"
+  [ -n "$iface" ] || {
+    warn "Interfaccia di default non rilevata: DNS lasciato come da DHCP."
+    DNS_SUMMARY="saltato (interfaccia non rilevata)"; return 0; }
+
+  # Guard 1: se la 853 non è raggiungibile, passare a DoT lascerebbe la macchina
+  # senza risoluzione. Basta che risponda uno dei server per procedere.
+  for entry in "${DNS_TLS_SERVERS[@]}"; do
+    if timeout 5 bash -c "cat </dev/null >/dev/tcp/${entry%%#*}/853" 2>/dev/null; then
+      reachable=1; break
+    fi
+  done
+  [ "$reachable" -eq 1 ] || {
+    warn "Nessun resolver DoT raggiungibile su 853/TCP: DNS lasciato come da DHCP."
+    DNS_SUMMARY="saltato (853/TCP non raggiungibile)"; return 0; }
+
+  # Guard 2: con DoT il resolver del DHCP esce di scena. Se il search domain del
+  # link risolve nomi interni che conosce solo lui, quei nomi si romperebbero.
+  domain="$(resolvectl status "$iface" 2>/dev/null | awk '/DNS Domain:/ {print $3; exit}')"
+  if [ -n "$domain" ] && getent hosts "$(hostname).${domain}" >/dev/null 2>&1; then
+    warn "'$(hostname).${domain}' è risolvibile solo dal resolver del DHCP: DNS lasciato invariato."
+    DNS_SUMMARY="saltato (search domain '$domain' in uso)"
+    return 0
+  fi
+
+  log "Configuro la risoluzione via DNS over TLS su '$iface'."
+  mkdir -p /etc/systemd/resolved.conf.d
+  cat > "$dropin" <<EOF
+# Gestito da init.sh — risoluzione via DNS over TLS.
+[Resolve]
+DNS=${DNS_TLS_SERVERS[*]}
+DNSOverTLS=yes
+EOF
+  chmod 644 "$dropin"
+
+  # Impedisce al DHCP di reimporre il proprio resolver sul link al boot.
+  cat > "$netplan_file" <<EOF
+# Gestito da init.sh — il resolver del DHCP non viene usato (vedi $dropin).
+network:
+  version: 2
+  ethernets:
+    ${iface}:
+      dhcp4-overrides:
+        use-dns: false
+EOF
+  chmod 600 "$netplan_file"
+
+  # Come per 'sshd -t' nella sezione 5: valido PRIMA di applicare e, se la
+  # validazione fallisce, rimuovo tutto senza toccare la config attiva.
+  if ! netplan generate >/dev/null 2>&1; then
+    rm -f "$netplan_file" "$dropin"
+    warn "netplan generate ha fallito: configurazione DNS rimossa, nulla modificato."
+    DNS_SUMMARY="saltato (netplan generate fallito)"
+    return 0
+  fi
+
+  systemctl restart systemd-resolved
+  # Il link conserva i server del DHCP fino al prossimo boot: li sovrascriviamo
+  # a runtime, così il DoT vale subito anche per il resto di questo script.
+  resolvectl dnsovertls "$iface" yes >/dev/null 2>&1 || true
+  resolvectl dns "$iface" "${DNS_TLS_SERVERS[@]}" >/dev/null 2>&1 || true
+  resolvectl flush-caches >/dev/null 2>&1 || true
+
+  # Verifica con due nomi: uno esterno neutro (la risoluzione funziona?) e uno
+  # della zona che il resolver OVH sbaglia (il problema è davvero risolto?).
+  if getent hosts example.com >/dev/null 2>&1 \
+     && getent hosts registry.mexage.net >/dev/null 2>&1; then
+    log "DNS over TLS attivo su '$iface' (${#DNS_TLS_SERVERS[@]} server)."
+    DNS_SUMMARY="DNS over TLS su $iface (${#DNS_TLS_SERVERS[@]} server)"
+  else
+    warn "Verifica della risoluzione fallita: ripristino il resolver del DHCP."
+    rm -f "$netplan_file" "$dropin"
+    netplan generate >/dev/null 2>&1 || true
+    systemctl restart systemd-resolved
+    DNS_SUMMARY="verifica FALLITA — resolver del DHCP ripristinato"
+  fi
+}
+
+setup_dns_over_tls
 
 # ---------------------------------------------------------------------------
 # 2. Pacchetti prerequisiti (unattended).
@@ -760,6 +883,7 @@ $(log "Bootstrap completato.")
   Versione script ....... $SCRIPT_VERSION
   Distribuzione ......... ${PRETTY_NAME:-$ID} (famiglia $DISTRO_FAMILY)
   Hostname .............. $NEW_HOSTNAME
+  DNS ................... $DNS_SUMMARY
   Utente target ......... $TARGET_USER (uid $TARGET_UID), gruppo $ADMIN_GROUP, con password
   authorized_keys ....... $AUTH_KEYS (${#SSH_PUBLIC_KEYS[@]} chiave/i)
   SSH hardening ......... password auth OFF, root login OFF

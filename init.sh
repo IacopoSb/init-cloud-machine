@@ -24,7 +24,7 @@ set -euo pipefail
 # Configurazione.
 # ---------------------------------------------------------------------------
 # Versione di questo script (riportata anche nel README.txt generato).
-SCRIPT_VERSION="1.3.0"
+SCRIPT_VERSION="1.3.1"
 
 # Base URL raw del repo da cui scaricare gli asset (README.txt, server-manager.sh).
 ASSETS_BASE="https://raw.githubusercontent.com/IacopoSb/init-cloud-machine/main"
@@ -34,7 +34,7 @@ TARGET_USER="mexage"
 
 # Chiavi pubbliche SSH da autorizzare per TARGET_USER (una per riga).
 SSH_PUBLIC_KEYS=(
-  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGF1zvqfiPqcP5sXTOHj5yxcybA00aoxiRXG/xurU3q6 warpgate"
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE9SdybglFjJ1nayK08GWBWAGRZ45jBDy9xz3LjUOD8o warpgate"
 )
 
 # Resolver usati al posto di quello fornito dal DHCP (vedi sezione 1b).
@@ -243,6 +243,9 @@ setup_dns_over_tls
 log "Installo i pacchetti prerequisiti di base..."
 pkg_refresh
 pkg_install ca-certificates curl sudo
+# fzf a parte: su RHEL/AlmaLinux sta in EPEL, che potrebbe non essere attivo.
+# È una comodità interattiva, non deve bloccare il bootstrap.
+pkg_install fzf || warn "fzf non installato (su RHEL/AlmaLinux serve EPEL)."
 
 # ---------------------------------------------------------------------------
 # 3. Utente target.

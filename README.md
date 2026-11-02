@@ -12,6 +12,10 @@ Lo script scarica a runtime gli asset da `assets/` del repo (README.txt e server
 
 ## Changelog
 
+### 1.3.1
+
+**fzf** installato di default insieme ai pacchetti di base. Su RHEL/AlmaLinux sta in EPEL: se manca lo script avvisa e prosegue. Chiave SSH `warpgate` aggiornata a quella del nuovo bastione.
+
 ### 1.3.0
 
 Nuova sezione **1b — DNS over TLS**. Il resolver assegnato via DHCP da OVH

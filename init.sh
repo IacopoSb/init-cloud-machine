@@ -27,7 +27,7 @@ set -euo pipefail
 # Configurazione.
 # ---------------------------------------------------------------------------
 # Versione di questo script (riportata anche nel README.txt generato).
-SCRIPT_VERSION="1.4.2"
+SCRIPT_VERSION="1.4.3"
 
 # Base URL raw del repo da cui scaricare gli asset (README.txt, server-manager.sh).
 ASSETS_BASE="https://raw.githubusercontent.com/IacopoSb/init-cloud-machine/main"

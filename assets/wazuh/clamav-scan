@@ -27,31 +27,42 @@ SIGS=$(clamscan --version 2>/dev/null || echo unknown)
 clamscan -r -i --exclude-dir='^/(proc|sys|dev|run)(/|$)' --log="$LOG" "$TARGET" > "$OUT" 2>> "$LOG"
 rc=$?
 
-# Un nome di file con a-capo spezza la sua riga in due: la prima parte non finisce con " FOUND" e la
-# seconda può nominare un file esistente diverso da quello infetto. Se prima del riepilogo compare una
-# riga che non è "… FOUND" né vuota, nessun percorso di questa scansione è affidabile: il rilevamento
-# resta (la firma è vera), il percorso va cercato nel log completo.
+# L'output testuale di clamscan è ambiguo: un nome di file può contenere a-capo e quindi FALSIFICARE righe
+# (un finto "… FOUND" che nomina un altro file, o un finto "----------- SCAN SUMMARY" che nasconde i
+# rilevamenti successivi). Quindi:
+# - il riepilogo vero è l'ULTIMO marcatore (si riconosce per posizione, non per contenuto);
+# - prima del riepilogo possono esserci solo righe "… FOUND" o vuote: qualunque altra riga = nome con
+#   a-capo → nessun percorso di questa scansione è affidabile (la firma resta vera);
+# - se clamscan dice che ci sono infetti ma ho estratto meno righe FOUND, emetto comunque un FOUND
+#   "non analizzabile": un rilevamento non deve mai restare senza allarme.
+last=$(grep -n '^----------- SCAN SUMMARY' "$OUT" | tail -1 | cut -d: -f1)
+BODY=$(mktemp); trap 'rm -f "$OUT" "$BODY"' EXIT
+if [ -n "$last" ]; then head -n "$((last - 1))" "$OUT" > "$BODY"; else cp "$OUT" "$BODY"; fi
+
 UNRELIABLE=0
 while IFS= read -r l; do
   case "$l" in
-    "----------- SCAN SUMMARY"*) break ;;
     ""|*" FOUND") ;;
     *) UNRELIABLE=1 ;;
   esac
-done < "$OUT"
+done < "$BODY"
 
+found=0
 while IFS= read -r l; do
   case "$l" in
-    "----------- SCAN SUMMARY"*) break ;;
     *" FOUND")
+      found=$((found + 1))
       body="${l% FOUND}"
       file="${body%: *}"
       if [ "$UNRELIABLE" -eq 1 ] || [ ! -e "$file" ]; then file="(percorso non affidabile, vedi $LOG)"; fi
       ev "FOUND file=\"$(q "$file")\" signature=\"$(q "${body##*: }")\"" ;;
   esac
-done < "$OUT"
+done < "$BODY"
 
 infected=$(sed -n 's/^Infected files: \([0-9]*\).*/\1/p' "$OUT" | tail -1)
+if { [ "$rc" -eq 1 ] && [ "$found" -eq 0 ]; } || [ "${infected:-0}" -gt "$found" ]; then
+  ev "FOUND file=\"(rilevamenti non analizzabili: infetti ${infected:-?}, estratti $found, vedi $LOG)\" signature=\"unparsed\""
+fi
 scanned=$(sed -n 's/^Scanned files: \([0-9]*\).*/\1/p' "$OUT" | tail -1)
 [ "$rc" -ge 2 ] && ev "ERROR rc=$rc"
 ev "SCAN_DONE target=\"$(q "$TARGET")\" infected=${infected:-0} scanned=${scanned:-0} sigs=\"$(q "$SIGS")\" rc=$rc"

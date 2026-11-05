@@ -12,6 +12,10 @@ Lo script scarica a runtime gli asset da `assets/` del repo (README.txt, server-
 
 ## Changelog
 
+### 1.4.3
+
+`clamav-scan`: chiusa un'evasione. Un nome di file con a-capo seguito da `----------- SCAN SUMMARY` faceva credere iniziato il riepilogo e nascondeva i rilevamenti successivi (allarme perso). Ora il riepilogo vero si riconosce per posizione (l'ultimo marcatore), e se `clamscan` segnala infetti (`rc=1` o `Infected files`) ma le righe `FOUND` estratte sono di meno, viene emesso comunque un evento `FOUND` "non analizzabile": un rilevamento non resta mai senza allarme.
+
 ### 1.4.2
 
 `clamav-scan`: se l'output di `clamscan` contiene una riga che non è `… FOUND` (segno di un nome di file con a-capo, che spezza la riga e può far comparire il nome di un altro file esistente), **tutti** i percorsi di quella scansione sono marcati come non affidabili negli eventi per Wazuh; la firma trovata resta segnalata. Lo stderr di `clamscan` va nel log completo invece che nell'output analizzato. Corretto il changelog: lo spostamento del log in `/var/log/clamav-scan/` è della 1.4.0, non della 1.4.1.

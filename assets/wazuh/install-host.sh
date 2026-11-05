@@ -104,6 +104,12 @@ if [ "$CLASS" = A ]; then
   fi
   FCUSER=$(awk '/^DatabaseOwner/{print $2}' "$FC"); FCUSER=${FCUSER:-$( [ "$FAMILY" = debian ] && echo clamav || echo clamupdate )}
   touch /var/log/clamav/freshclam.log && chown "$FCUSER" /var/log/clamav /var/log/clamav/freshclam.log
+  # con SELinux attivo (es. AlmaLinux) una cartella creata con mkdir prende il contesto generico di /var/log:
+  # freshclam, confinato, non riesce a fare lchown sul log ed esce ("Failed to switch to clamupdate user").
+  # restorecon applica il contesto previsto dalla policy per /var/log/clamav.
+  if command -v restorecon >/dev/null && command -v selinuxenabled >/dev/null && selinuxenabled; then
+    restorecon -R /var/log/clamav
+  fi
   systemctl enable "$FCSVC" >/dev/null 2>&1 || true
   systemctl restart "$FCSVC" 2>/dev/null || true
   log "attendo le firme (max 5 min)"
@@ -168,15 +174,25 @@ EOF
   unset WAZUH_REGISTRATION_PASSWORD
 fi
 
-if [ "$CLASS" = A ]; then GROUP_HINT="ovh (macchina OVH) oppure mvps (macchina MVPS)"; else GROUP_HINT="small (host senza ClamAV)"; fi
+# NB: niente "$( [ … ] && echo … )" qui: in classe C il test fallisce e con set -e lo script usciva in
+# silenzio prima di avviare l'agent (bug fino alla 1.4.4). Solo if espliciti.
+if [ "$CLASS" = A ]; then
+  GROUP_HINT="ovh (macchina OVH) oppure mvps (macchina MVPS)"
+  CLAMAV_STATE="installato, scansione settimanale domenica notte"
+  STEP3="  3. (facoltativo) prova la scansione su una cartella piccola: sudo /usr/local/bin/clamav-scan /tmp
+     poi: sudo tail -2 /var/log/clamav-scan/events.log"
+else
+  GROUP_HINT="small (host senza ClamAV)"
+  CLAMAV_STATE="NON installato (classe C)"
+  STEP3=""
+fi
 STEPS="WAZUH / CLAMAV - passi per completare la configurazione
-  Stato: ClamAV $( [ "$CLASS" = A ] && echo "installato, scansione settimanale domenica notte" || echo "NON installato (RAM ${MEM_MB} MB < ${CLASS_A_MIN_MB}: classe C)" ); agent Wazuh $WAZUH_VER installato.
+  Stato: ClamAV $CLAMAV_STATE; agent Wazuh $WAZUH_VER installato.
   1. Registra l'agent sul manager (password di enrollment in Vaultwarden, 'Wazuh enrollment'):
        sudo wazuh-enroll <nome-target-warpgate> <gruppo>
      gruppo: $GROUP_HINT
   2. Controlla che l'agent risulti attivo su https://wazuh.mexage.net
-$( [ "$CLASS" = A ] && echo "  3. (facoltativo) prova la scansione su una cartella piccola: sudo /usr/local/bin/clamav-scan /tmp
-     poi: tail -2 /var/log/clamav-scan/events.log" )"
+$STEP3"
 
 if [ "$NO_ENROLL" -eq 1 ]; then
   log "agent installato ma NON registrato e NON avviato: vedi i passi qui sotto"
@@ -185,8 +201,16 @@ if [ "$NO_ENROLL" -eq 1 ]; then
 else
   systemctl daemon-reload
   systemctl enable --now wazuh-agent >/dev/null
-  sleep 10
+  sleep 15
   log "wazuh-agent: $(systemctl is-active wazuh-agent)"
   grep -E "Connected to the server|Valid key received|ERROR" /var/ossec/logs/ossec.log | tail -3 || true
+  # la registrazione via WAZUH_REGISTRATION_PASSWORD lascia la password in authd.pass: a chiave ottenuta
+  # non serve più (una nuova registrazione si fa con wazuh-enroll, che la chiede a prompt)
+  if [ -s /var/ossec/etc/client.keys ]; then
+    rm -f /var/ossec/etc/authd.pass
+  else
+    warn_msg="agent NON registrato: controlla /var/ossec/logs/ossec.log e usa 'sudo wazuh-enroll $AGENT_NAME $GROUP'"
+    echo "ATTENZIONE: $warn_msg" >&2
+  fi
 fi
 log "fatto"

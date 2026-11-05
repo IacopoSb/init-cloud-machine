@@ -12,13 +12,16 @@ Lo script scarica a runtime gli asset da `assets/` del repo (README.txt, server-
 
 ## Changelog
 
+### 1.4.2
+
+`clamav-scan`: se l'output di `clamscan` contiene una riga che non è `… FOUND` (segno di un nome di file con a-capo, che spezza la riga e può far comparire il nome di un altro file esistente), **tutti** i percorsi di quella scansione sono marcati come non affidabili negli eventi per Wazuh; la firma trovata resta segnalata. Lo stderr di `clamscan` va nel log completo invece che nell'output analizzato. Corretto il changelog: lo spostamento del log in `/var/log/clamav-scan/` è della 1.4.0, non della 1.4.1.
+
 ### 1.4.1
 
 Correzioni di sicurezza del pacchetto ClamAV + Wazuh (sezione 11b):
 
 - `install-host.sh` con `--src-url` scarica **sempre** i file di supporto in una cartella privata e non usa più quelli presenti accanto allo script: lanciato da `init.sh` in `/tmp`, avrebbe installato da root un `clamav-scan` piantato lì da un altro utente. `init.sh` ora scarica l'installer in una cartella `mktemp -d` con permessi 700.
 - `clamav-scan`: i campi degli eventi per Wazuh perdono i caratteri di controllo (un a-capo nel nome di un file poteva creare un evento falso) e `\`/`"` sono neutralizzati.
-- Il log completo delle scansioni sta in `/var/log/clamav-scan/` (root) e non più nella home di `mexage`: root non scrive né fa `chown` in cartelle controllate da un utente.
 
 ### 1.4.0
 
@@ -27,6 +30,8 @@ Nuova sezione **11b — ClamAV + agent Wazuh** (Debian/Ubuntu e RHEL/AlmaLinux, 
 - **ClamAV** con aggiornamento firme e scansione settimanale (`clamav-scan.timer`, domenica notte, sfalsata) **solo se la RAM totale è ≥ 3 GB** (classe A); sotto quella soglia le firme in memoria (1–1,5 GB) metterebbero in crisi la macchina e si installa solo l'agent (classe C).
 - **Agent Wazuh** alla stessa versione del manager (4.14.9, repo disattivato dopo l'installazione), **non registrato**: la registrazione richiede la password di enrollment (Vaultwarden) e il nome del target Warpgate, e si fa dopo con `sudo wazuh-enroll <nome> <gruppo>` (installato in `/usr/local/sbin`).
 - I passi per completare la configurazione sono stampati in fondo all'output e aggiunti al `README.txt` del server.
+
+Il log completo delle scansioni sta in `/var/log/clamav-scan/` (root): root non scrive né fa `chown` in cartelle controllate da un utente.
 
 Un errore in questa sezione non interrompe il bootstrap: il riepilogo lo segnala (`ClamAV + Wazuh`).
 

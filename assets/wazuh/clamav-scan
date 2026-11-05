@@ -23,17 +23,30 @@ ev() { printf '%s %s clamav-scan: %s\n' "$(date -Iseconds)" "$(hostname -s)" "$1
 q() { printf '%s' "$1" | tr -d '[:cntrl:]' | tr '\\"' "/'"; }
 
 SIGS=$(clamscan --version 2>/dev/null || echo unknown)
-clamscan -r -i --exclude-dir='^/(proc|sys|dev|run)(/|$)' --log="$LOG" "$TARGET" > "$OUT" 2>&1
+# stdout = solo righe "... FOUND" (-i), righe vuote e riepilogo; lo stderr (avvisi LibClamAV) va nel log completo
+clamscan -r -i --exclude-dir='^/(proc|sys|dev|run)(/|$)' --log="$LOG" "$TARGET" > "$OUT" 2>> "$LOG"
 rc=$?
+
+# Un nome di file con a-capo spezza la sua riga in due: la prima parte non finisce con " FOUND" e la
+# seconda può nominare un file esistente diverso da quello infetto. Se prima del riepilogo compare una
+# riga che non è "… FOUND" né vuota, nessun percorso di questa scansione è affidabile: il rilevamento
+# resta (la firma è vera), il percorso va cercato nel log completo.
+UNRELIABLE=0
+while IFS= read -r l; do
+  case "$l" in
+    "----------- SCAN SUMMARY"*) break ;;
+    ""|*" FOUND") ;;
+    *) UNRELIABLE=1 ;;
+  esac
+done < "$OUT"
 
 while IFS= read -r l; do
   case "$l" in
+    "----------- SCAN SUMMARY"*) break ;;
     *" FOUND")
       body="${l% FOUND}"
       file="${body%: *}"
-      # un nome di file con a-capo spezza la riga di clamscan: se il percorso estratto non esiste
-      # non lo riporto come vero (il rilevamento resta, il percorso va cercato nel log completo)
-      [ -e "$file" ] || file="(percorso non affidabile, vedi $LOG)"
+      if [ "$UNRELIABLE" -eq 1 ] || [ ! -e "$file" ]; then file="(percorso non affidabile, vedi $LOG)"; fi
       ev "FOUND file=\"$(q "$file")\" signature=\"$(q "${body##*: }")\"" ;;
   esac
 done < "$OUT"

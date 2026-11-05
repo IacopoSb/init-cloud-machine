@@ -21,7 +21,8 @@ OSSEC=/var/ossec
 [ -x "$OSSEC/bin/agent-auth" ] || die "wazuh-agent non installato ($OSSEC/bin/agent-auth assente)"
 
 case "$GROUP" in ovh|mvps|small) ;; *) die "gruppo non valido: $GROUP (ovh, mvps, small)" ;; esac
-if [ -x /usr/local/bin/clamav-scan ]; then
+# classe A = scansione installata davvero (timer), non la sola presenza dello script
+if [ -f /etc/systemd/system/clamav-scan.timer ] && command -v clamscan >/dev/null; then
   [ "$GROUP" != small ] || die "questo host ha ClamAV: usa il gruppo ovh o mvps, non small"
 else
   [ "$GROUP" = small ] || die "questo host NON ha ClamAV: il gruppo deve essere small"

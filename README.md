@@ -12,6 +12,11 @@ Lo script scarica a runtime gli asset da `assets/` del repo (README.txt, server-
 
 ## Changelog
 
+### 1.4.4
+
+- `clamav-scan`: le righe `FOUND` si credono solo se l'output di `clamscan` è coerente con fatti indipendenti (righe `FOUND` **uguali** a `Infected files`, nessuna riga anomala prima del riepilogo, exit code coerente). Altrimenti un solo evento `output-anomaly`, che resta un allarme: niente più falsi allarmi con firme inventate da un nome di file costruito ad arte, e niente rilevamenti nascosti.
+- `wazuh-enroll`: riconosce un host con ClamAV dal timer di scansione installato, non dalla sola presenza dello script `clamav-scan`.
+
 ### 1.4.3
 
 `clamav-scan`: chiusa un'evasione. Un nome di file con a-capo seguito da `----------- SCAN SUMMARY` faceva credere iniziato il riepilogo e nascondeva i rilevamenti successivi (allarme perso). Ora il riepilogo vero si riconosce per posizione (l'ultimo marcatore), e se `clamscan` segnala infetti (`rc=1` o `Infected files`) ma le righe `FOUND` estratte sono di meno, viene emesso comunque un evento `FOUND` "non analizzabile": un rilevamento non resta mai senza allarme.

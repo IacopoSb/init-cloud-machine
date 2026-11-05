@@ -28,40 +28,46 @@ clamscan -r -i --exclude-dir='^/(proc|sys|dev|run)(/|$)' --log="$LOG" "$TARGET" 
 rc=$?
 
 # L'output testuale di clamscan è ambiguo: un nome di file può contenere a-capo e quindi FALSIFICARE righe
-# (un finto "… FOUND" che nomina un altro file, o un finto "----------- SCAN SUMMARY" che nasconde i
-# rilevamenti successivi). Quindi:
-# - il riepilogo vero è l'ULTIMO marcatore (si riconosce per posizione, non per contenuto);
-# - prima del riepilogo possono esserci solo righe "… FOUND" o vuote: qualunque altra riga = nome con
-#   a-capo → nessun percorso di questa scansione è affidabile (la firma resta vera);
-# - se clamscan dice che ci sono infetti ma ho estratto meno righe FOUND, emetto comunque un FOUND
-#   "non analizzabile": un rilevamento non deve mai restare senza allarme.
+# (un finto "… FOUND" in più = falso allarme con firma inventata; un finto "----------- SCAN SUMMARY" =
+# rilevamenti nascosti). Le righe FOUND si credono SOLO se l'output è coerente con fatti indipendenti:
+# - il riepilogo vero è l'ULTIMO marcatore (riconosciuto per posizione, non per contenuto);
+# - prima del riepilogo ci sono solo righe "… FOUND" o vuote;
+# - il numero di righe FOUND è UGUALE a "Infected files" (né di più: falsi allarmi; né di meno: nascosti);
+# - rc coerente (1 se ci sono infetti, 0 se non ce ne sono).
+# Altrimenti un solo evento "output non coerente": resta un allarme (qualcuno ha costruito apposta un nome
+# di file, o clamscan si è comportato in modo inatteso) e il dettaglio vero è nel log completo.
 last=$(grep -n '^----------- SCAN SUMMARY' "$OUT" | tail -1 | cut -d: -f1)
 BODY=$(mktemp); trap 'rm -f "$OUT" "$BODY"' EXIT
 if [ -n "$last" ]; then head -n "$((last - 1))" "$OUT" > "$BODY"; else cp "$OUT" "$BODY"; fi
-
-UNRELIABLE=0
-while IFS= read -r l; do
-  case "$l" in
-    ""|*" FOUND") ;;
-    *) UNRELIABLE=1 ;;
-  esac
-done < "$BODY"
-
-found=0
-while IFS= read -r l; do
-  case "$l" in
-    *" FOUND")
-      found=$((found + 1))
-      body="${l% FOUND}"
-      file="${body%: *}"
-      if [ "$UNRELIABLE" -eq 1 ] || [ ! -e "$file" ]; then file="(percorso non affidabile, vedi $LOG)"; fi
-      ev "FOUND file=\"$(q "$file")\" signature=\"$(q "${body##*: }")\"" ;;
-  esac
-done < "$BODY"
-
 infected=$(sed -n 's/^Infected files: \([0-9]*\).*/\1/p' "$OUT" | tail -1)
-if { [ "$rc" -eq 1 ] && [ "$found" -eq 0 ]; } || [ "${infected:-0}" -gt "$found" ]; then
-  ev "FOUND file=\"(rilevamenti non analizzabili: infetti ${infected:-?}, estratti $found, vedi $LOG)\" signature=\"unparsed\""
+
+stray=0; found=0
+while IFS= read -r l; do
+  case "$l" in
+    "") ;;
+    *" FOUND") found=$((found + 1)) ;;
+    *) stray=1 ;;
+  esac
+done < "$BODY"
+
+consistent=1
+[ -n "$last" ] && [ -n "$infected" ] || consistent=0
+[ "$stray" -eq 0 ] || consistent=0
+[ "$found" -eq "${infected:-0}" ] || consistent=0
+if [ "$found" -gt 0 ]; then [ "$rc" -eq 1 ] || consistent=0; fi
+
+if [ "$consistent" -eq 1 ]; then
+  while IFS= read -r l; do
+    case "$l" in
+      *" FOUND")
+        body="${l% FOUND}"
+        file="${body%: *}"
+        [ -e "$file" ] || file="(percorso non affidabile, vedi $LOG)"
+        ev "FOUND file=\"$(q "$file")\" signature=\"$(q "${body##*: }")\"" ;;
+    esac
+  done < "$BODY"
+elif [ "$found" -gt 0 ] || [ "${infected:-0}" -gt 0 ] || [ "$rc" -eq 1 ]; then
+  ev "FOUND file=\"(output di clamscan non coerente: righe FOUND $found, infetti ${infected:-?}, rc $rc; vedi $LOG)\" signature=\"output-anomaly\""
 fi
 scanned=$(sed -n 's/^Scanned files: \([0-9]*\).*/\1/p' "$OUT" | tail -1)
 [ "$rc" -ge 2 ] && ev "ERROR rc=$rc"

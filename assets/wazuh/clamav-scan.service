@@ -9,3 +9,6 @@ Nice=19
 IOSchedulingClass=idle
 CPUQuota=50%
 OOMScoreAdjust=1000
+# se il kernel uccide clamscan per memoria, lo script deve sopravvivere e registrare l'esito (rc 137):
+# con il default (stop) systemd fermerebbe tutta la unit e non resterebbe nessun evento
+OOMPolicy=continue

@@ -102,6 +102,13 @@ if [ "$CLASS" = A ]; then
   else
     echo "UpdateLogFile /var/log/clamav/freshclam.log" >> "$FC"
   fi
+  # timestamp sulle righe del log (default su Debian, commentato nel freshclam.conf di EPEL): il decoder
+  # freshclam-file lo usa; senza, gli errori sono coperti solo dalla regola 100104
+  if grep -qE '^#?LogTime' "$FC"; then
+    sed -i -E 's|^#?LogTime.*|LogTime yes|' "$FC"
+  else
+    echo "LogTime yes" >> "$FC"
+  fi
   FCUSER=$(awk '/^DatabaseOwner/{print $2}' "$FC"); FCUSER=${FCUSER:-$( [ "$FAMILY" = debian ] && echo clamav || echo clamupdate )}
   touch /var/log/clamav/freshclam.log && chown "$FCUSER" /var/log/clamav /var/log/clamav/freshclam.log
   # con SELinux attivo (es. AlmaLinux) una cartella creata con mkdir prende il contesto generico di /var/log:

@@ -22,6 +22,11 @@ ev() { printf '%s %s clamav-scan: %s\n' "$(date -Iseconds)" "$(hostname -s)" "$1
 # creare una riga/evento falso per Wazuh), poi \ e " sostituiti da / e '
 q() { printf '%s' "$1" | tr -d '[:cntrl:]' | tr '\\"' "/'"; }
 
+# Scansione interrotta (systemctl stop, reboot, Ctrl+C): lasciare comunque una traccia, altrimenti quella
+# settimana l'evidenza SCAN_DONE manca in silenzio. systemd manda TERM a tutto il cgroup, quindi la trap
+# scatta appena clamscan è terminato.
+trap 'ev "ERROR rc=143"; ev "SCAN_DONE target=\"$(q "$TARGET")\" infected=0 scanned=0 sigs=\"interrotta\" rc=143"; exit 143' TERM INT
+
 SIGS=$(clamscan --version 2>/dev/null || echo unknown)
 # stdout = solo righe "... FOUND" (-i), righe vuote e riepilogo; lo stderr (avvisi LibClamAV) va nel log completo
 clamscan -r -i --exclude-dir='^/(proc|sys|dev|run)(/|$)' --log="$LOG" "$TARGET" > "$OUT" 2>> "$LOG"

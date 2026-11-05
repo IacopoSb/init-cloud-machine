@@ -18,7 +18,9 @@ trap 'rm -f "$OUT"' EXIT
 umask 027
 install -d -m 0750 -o root -g root "$LOGDIR"
 ev() { printf '%s %s clamav-scan: %s\n' "$(date -Iseconds)" "$(hostname -s)" "$1" >> "$EVENTS"; }
-q() { printf '%s' "${1//\"/\'}"; }   # niente doppi apici dentro i campi
+# campi dentro gli eventi: via i caratteri di controllo (un a-capo nel nome di un file non deve poter
+# creare una riga/evento falso per Wazuh), poi \ e " sostituiti da / e '
+q() { printf '%s' "$1" | tr -d '[:cntrl:]' | tr '\\"' "/'"; }
 
 SIGS=$(clamscan --version 2>/dev/null || echo unknown)
 clamscan -r -i --exclude-dir='^/(proc|sys|dev|run)(/|$)' --log="$LOG" "$TARGET" > "$OUT" 2>&1
@@ -28,7 +30,11 @@ while IFS= read -r l; do
   case "$l" in
     *" FOUND")
       body="${l% FOUND}"
-      ev "FOUND file=\"$(q "${body%: *}")\" signature=\"$(q "${body##*: }")\"" ;;
+      file="${body%: *}"
+      # un nome di file con a-capo spezza la riga di clamscan: se il percorso estratto non esiste
+      # non lo riporto come vero (il rilevamento resta, il percorso va cercato nel log completo)
+      [ -e "$file" ] || file="(percorso non affidabile, vedi $LOG)"
+      ev "FOUND file=\"$(q "$file")\" signature=\"$(q "${body##*: }")\"" ;;
   esac
 done < "$OUT"
 

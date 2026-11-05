@@ -12,6 +12,14 @@ Lo script scarica a runtime gli asset da `assets/` del repo (README.txt, server-
 
 ## Changelog
 
+### 1.4.1
+
+Correzioni di sicurezza del pacchetto ClamAV + Wazuh (sezione 11b):
+
+- `install-host.sh` con `--src-url` scarica **sempre** i file di supporto in una cartella privata e non usa più quelli presenti accanto allo script: lanciato da `init.sh` in `/tmp`, avrebbe installato da root un `clamav-scan` piantato lì da un altro utente. `init.sh` ora scarica l'installer in una cartella `mktemp -d` con permessi 700.
+- `clamav-scan`: i campi degli eventi per Wazuh perdono i caratteri di controllo (un a-capo nel nome di un file poteva creare un evento falso) e `\`/`"` sono neutralizzati.
+- Il log completo delle scansioni sta in `/var/log/clamav-scan/` (root) e non più nella home di `mexage`: root non scrive né fa `chown` in cartelle controllate da un utente.
+
 ### 1.4.0
 
 Nuova sezione **11b — ClamAV + agent Wazuh** (Debian/Ubuntu e RHEL/AlmaLinux, anche in `init-mvps.sh`). Scarica ed esegue `assets/wazuh/install-host.sh --no-enroll --class auto`, lo stesso script usato per il rollout manuale sui server esistenti:

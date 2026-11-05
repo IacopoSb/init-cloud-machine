@@ -27,7 +27,7 @@ set -euo pipefail
 # Configurazione.
 # ---------------------------------------------------------------------------
 # Versione di questo script (riportata anche nel README.txt generato).
-SCRIPT_VERSION="1.4.0"
+SCRIPT_VERSION="1.4.1"
 
 # Base URL raw del repo da cui scaricare gli asset (README.txt, server-manager.sh).
 ASSETS_BASE="https://raw.githubusercontent.com/IacopoSb/init-cloud-machine/main"
@@ -859,7 +859,8 @@ fi
 # Un errore qui non deve far fallire il bootstrap: l'host resta usabile, il riepilogo lo segnala.
 WAZUH_SUMMARY="non installato"
 WAZUH_STEPS_FILE="$(mktemp)"
-WAZUH_INSTALLER="$(mktemp)"
+WAZUH_DIR="$(mktemp -d)"; chmod 700 "$WAZUH_DIR"   # cartella privata: niente file piantati da altri
+WAZUH_INSTALLER="$WAZUH_DIR/install-host.sh"
 log "Installo ClamAV (se la RAM lo consente) e l'agent Wazuh, senza registrarlo."
 if curl -fsSL "$ASSETS_BASE/assets/wazuh/install-host.sh" -o "$WAZUH_INSTALLER"; then
   if bash "$WAZUH_INSTALLER" --no-enroll --class auto --src-url "$ASSETS_BASE/assets/wazuh" --steps-file "$WAZUH_STEPS_FILE"; then
@@ -872,7 +873,7 @@ else
   warn "Download di install-host.sh fallito ($ASSETS_BASE/assets/wazuh/install-host.sh)."
   WAZUH_SUMMARY="download FALLITO"
 fi
-rm -f "$WAZUH_INSTALLER"
+rm -rf "$WAZUH_DIR"
 
 # ---------------------------------------------------------------------------
 # 12. README.txt e server-manager.sh (scaricati dagli asset del repo).

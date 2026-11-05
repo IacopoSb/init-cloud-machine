@@ -65,11 +65,15 @@ else
   log "host $AGENT_NAME ($OS_PRETTY, $FAMILY), classe $CLASS, gruppo $GROUP, manager $MANAGER, Wazuh $WAZUH_VER"
 fi
 
-# file di supporto: dalla cartella dello script, altrimenti da --src-url
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+# file di supporto: con --src-url SEMPRE scaricati in una cartella privata (mai presi dalla cartella dello
+# script, che da init.sh sarebbe una dir condivisa come /tmp: un file piantato lì finirebbe installato da root);
+# senza --src-url, dalla cartella dello script (rollout manuale da ~/wazuh-host).
+TMP=$(mktemp -d); chmod 700 "$TMP"; trap 'rm -rf "$TMP"' EXIT
 fetch() { # nome -> stampa il percorso del file
-  if [ -f "$SRC/$1" ]; then echo "$SRC/$1"; return; fi
-  [ -n "$SRC_URL" ] || die "manca $SRC/$1 (e nessun --src-url)"
+  if [ -z "$SRC_URL" ]; then
+    [ -f "$SRC/$1" ] || die "manca $SRC/$1"
+    echo "$SRC/$1"; return
+  fi
   curl -fsSL "$SRC_URL/$1" -o "$TMP/$1" || die "download fallito: $SRC_URL/$1"
   echo "$TMP/$1"
 }

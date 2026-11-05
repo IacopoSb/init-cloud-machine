@@ -1,0 +1,10 @@
+[Unit]
+Description=Scansione ClamAV settimanale (domenica notte, sfalsata fra gli host)
+
+[Timer]
+OnCalendar=Sun *-*-* 01:00
+RandomizedDelaySec=4h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

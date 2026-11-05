@@ -14,6 +14,9 @@
 #   8. Abilita l'avvio del daemon rootless al boot (systemd --user + linger).
 #   9. Installa e collega il Synology Active Backup for Business Agent.
 #  10. Crea le cartelle di lavoro di mexage e imposta le project quota (ext4).
+#  11. Beszel agent.
+# 11b. ClamAV (se RAM >= 3 GB) + agent Wazuh installati ma NON registrati: a fine
+#      script stampa i passi ('sudo wazuh-enroll <nome> <gruppo>').
 #
 # Va lanciato COME ROOT (o via sudo) perché può dover creare l'utente:
 #   sudo bash -c "$(curl -fsSL <URL> | tr -d '\r')"
@@ -24,7 +27,7 @@ set -euo pipefail
 # Configurazione.
 # ---------------------------------------------------------------------------
 # Versione di questo script (riportata anche nel README.txt generato).
-SCRIPT_VERSION="1.3.1"
+SCRIPT_VERSION="1.4.0"
 
 # Base URL raw del repo da cui scaricare gli asset (README.txt, server-manager.sh).
 ASSETS_BASE="https://raw.githubusercontent.com/IacopoSb/init-cloud-machine/main"
@@ -846,6 +849,32 @@ fi
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
+# 11b. ClamAV + agent Wazuh (installati, NON registrati).
+# ---------------------------------------------------------------------------
+# La logica sta in assets/wazuh/install-host.sh, la stessa usata per il rollout manuale: qui gira con
+# --no-enroll. ClamAV + scansione settimanale solo se la RAM totale è >= 3 GB (classe A), altrimenti
+# solo l'agent (classe C). L'agent è installato alla versione del manager ma non registrato: la
+# registrazione vuole la password di enrollment (Vaultwarden) e il nome del target Warpgate, quindi
+# si fa dopo con 'sudo wazuh-enroll <nome> <gruppo>'. I passi finiscono nel README e in fondo all'output.
+# Un errore qui non deve far fallire il bootstrap: l'host resta usabile, il riepilogo lo segnala.
+WAZUH_SUMMARY="non installato"
+WAZUH_STEPS_FILE="$(mktemp)"
+WAZUH_INSTALLER="$(mktemp)"
+log "Installo ClamAV (se la RAM lo consente) e l'agent Wazuh, senza registrarlo."
+if curl -fsSL "$ASSETS_BASE/assets/wazuh/install-host.sh" -o "$WAZUH_INSTALLER"; then
+  if bash "$WAZUH_INSTALLER" --no-enroll --class auto --src-url "$ASSETS_BASE/assets/wazuh" --steps-file "$WAZUH_STEPS_FILE"; then
+    WAZUH_SUMMARY="installati, agent NON registrato (passi in fondo e nel README)"
+  else
+    warn "Installazione ClamAV/Wazuh fallita: l'host resta utilizzabile, riprova con assets/wazuh/install-host.sh."
+    WAZUH_SUMMARY="installazione FALLITA"
+  fi
+else
+  warn "Download di install-host.sh fallito ($ASSETS_BASE/assets/wazuh/install-host.sh)."
+  WAZUH_SUMMARY="download FALLITO"
+fi
+rm -f "$WAZUH_INSTALLER"
+
+# ---------------------------------------------------------------------------
 # 12. README.txt e server-manager.sh (scaricati dagli asset del repo).
 # ---------------------------------------------------------------------------
 # Gli asset stanno in assets/ del repo e vengono scaricati qui: init.sh resta
@@ -860,6 +889,8 @@ if curl -fsSL "$ASSETS_BASE/assets/README.txt" -o "$TARGET_HOME/README.txt"; the
     -e "s|%%UID%%|$TARGET_UID|g" \
     -e "s|%%HOME%%|$TARGET_HOME|g" \
     "$TARGET_HOME/README.txt"
+  # passi di registrazione Wazuh (sezione 11b) in coda al README
+  [ -s "$WAZUH_STEPS_FILE" ] && printf '\n%s\n' "$(cat "$WAZUH_STEPS_FILE")" >> "$TARGET_HOME/README.txt"
   chown "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/README.txt"
 else
   warn "Download di README.txt fallito ($ASSETS_BASE/assets/README.txt)."
@@ -893,6 +924,7 @@ $(log "Bootstrap completato.")
   Motore container ...... $DOCKER_SUMMARY
   Synology ABB agent .... $SYNO_STATUS
   Beszel agent .......... $BESZEL_STATUS
+  ClamAV + Wazuh ........ $WAZUH_SUMMARY
   Cartelle utente ....... apps, data, logs, backup in $TARGET_HOME
   README ................ $TARGET_HOME/README.txt
   Project quota ......... $QUOTA_SUMMARY
@@ -903,6 +935,12 @@ ATTENZIONE (rischio lockout):
   di riuscire ad accedere via chiave come '$TARGET_USER'.
 
 EOF
+
+if [ -s "$WAZUH_STEPS_FILE" ]; then
+  cat "$WAZUH_STEPS_FILE"
+  echo
+fi
+rm -f "$WAZUH_STEPS_FILE"
 
 if [ "$QUOTA_REBOOT" -eq 1 ]; then
   warn "=============================================================="

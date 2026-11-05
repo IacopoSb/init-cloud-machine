@@ -1,0 +1,52 @@
+#!/bin/bash
+# Registra sul manager l'agent Wazuh già installato (da init.sh / init-mvps.sh / install-host.sh --no-enroll).
+#
+#   sudo wazuh-enroll <nome> <gruppo> [manager]
+#
+#   <nome>    nome dell'agent = nome del target Warpgate (molti host MVPS hanno hostname 'vps')
+#   <gruppo>  ovh | mvps  (host con ClamAV)   oppure   small  (host senza ClamAV)
+#   [manager] default wazuh-agent.mexage.net (proxy TCP sul bastione verso 02)
+#
+# La password di enrollment è chiesta a prompt (Vaultwarden: "Wazuh enrollment"), scritta per pochi secondi in
+# /var/ossec/etc/authd.pass (letto da agent-auth) e poi cancellata. Mai come argomento.
+set -euo pipefail
+
+die() { echo "ERRORE: $*" >&2; exit 1; }
+log() { echo "==> $*"; }
+
+[ "$(id -u)" -eq 0 ] || die "va eseguito come root: sudo wazuh-enroll <nome> <gruppo>"
+[ $# -ge 2 ] || die "uso: sudo wazuh-enroll <nome> <gruppo: ovh|mvps|small> [manager]"
+AGENT_NAME="$1"; GROUP="$2"; MANAGER="${3:-wazuh-agent.mexage.net}"
+OSSEC=/var/ossec
+[ -x "$OSSEC/bin/agent-auth" ] || die "wazuh-agent non installato ($OSSEC/bin/agent-auth assente)"
+
+case "$GROUP" in ovh|mvps|small) ;; *) die "gruppo non valido: $GROUP (ovh, mvps, small)" ;; esac
+if [ -x /usr/local/bin/clamav-scan ]; then
+  [ "$GROUP" != small ] || die "questo host ha ClamAV: usa il gruppo ovh o mvps, non small"
+else
+  [ "$GROUP" = small ] || die "questo host NON ha ClamAV: il gruppo deve essere small"
+fi
+if [ -s "$OSSEC/etc/client.keys" ]; then
+  die "l'agent ha già una chiave ($OSSEC/etc/client.keys): è già registrato. Per rifarlo rimuovilo prima dal manager."
+fi
+
+log "manager $MANAGER nella config dell'agent"
+sed -i -E "0,/<address>[^<]*<\/address>/s||<address>$MANAGER</address>|" "$OSSEC/etc/ossec.conf"
+
+read -rsp "Password di enrollment Wazuh: " PW; echo
+[ -n "$PW" ] || die "password vuota"
+trap 'rm -f "$OSSEC/etc/authd.pass"' EXIT
+( umask 077; printf '%s\n' "$PW" > "$OSSEC/etc/authd.pass" )
+chown root:wazuh "$OSSEC/etc/authd.pass" && chmod 640 "$OSSEC/etc/authd.pass"
+unset PW
+
+log "registro '$AGENT_NAME' nel gruppo '$GROUP'"
+"$OSSEC/bin/agent-auth" -m "$MANAGER" -A "$AGENT_NAME" -G "$GROUP"
+rm -f "$OSSEC/etc/authd.pass"
+
+systemctl daemon-reload
+systemctl enable --now wazuh-agent >/dev/null
+sleep 10
+log "wazuh-agent: $(systemctl is-active wazuh-agent)"
+grep -E "Connected to the server|ERROR" "$OSSEC/logs/ossec.log" | tail -3 || true
+log "fatto: controlla l'agent su https://wazuh.mexage.net"

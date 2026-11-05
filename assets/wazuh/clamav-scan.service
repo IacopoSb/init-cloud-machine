@@ -1,0 +1,11 @@
+[Unit]
+Description=ClamAV full filesystem scan (eventi per Wazuh in /var/log/clamav-scan/events.log)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/clamav-scan
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=50%
+OOMScoreAdjust=1000

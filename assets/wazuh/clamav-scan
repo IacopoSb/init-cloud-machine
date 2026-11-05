@@ -1,0 +1,41 @@
+#!/bin/bash
+# Scansione ClamAV (classe A). Uso: clamav-scan [target]   (default: /)
+# - log completo datato:   /var/log/clamav-scan/scan-AAAA-MM-GG.log (root 0640, pulizia oltre 180 giorni)
+#   NON nella home di mexage: root non deve scrivere/chown in una cartella controllata da un utente (symlink).
+# - log eventi per Wazuh:  /var/log/clamav-scan/events.log, una riga per evento:
+#     <ISO8601> <host> clamav-scan: FOUND file="<path>" signature="<sig>"
+#     <ISO8601> <host> clamav-scan: SCAN_DONE target="<path>" infected=<n> scanned=<n> sigs="<versione>" rc=<n>
+#     <ISO8601> <host> clamav-scan: ERROR rc=<n>
+# Exit code = quello di clamscan (0 pulito, 1 malware trovato, 2 errore).
+set -u
+TARGET="${1:-/}"
+EVENTS=/var/log/clamav-scan/events.log
+LOGDIR=/var/log/clamav-scan
+LOG="$LOGDIR/scan-$(date +%F).log"
+OUT=$(mktemp)
+trap 'rm -f "$OUT"' EXIT
+
+umask 027
+install -d -m 0750 -o root -g root "$LOGDIR"
+ev() { printf '%s %s clamav-scan: %s\n' "$(date -Iseconds)" "$(hostname -s)" "$1" >> "$EVENTS"; }
+q() { printf '%s' "${1//\"/\'}"; }   # niente doppi apici dentro i campi
+
+SIGS=$(clamscan --version 2>/dev/null || echo unknown)
+clamscan -r -i --exclude-dir='^/(proc|sys|dev|run)(/|$)' --log="$LOG" "$TARGET" > "$OUT" 2>&1
+rc=$?
+
+while IFS= read -r l; do
+  case "$l" in
+    *" FOUND")
+      body="${l% FOUND}"
+      ev "FOUND file=\"$(q "${body%: *}")\" signature=\"$(q "${body##*: }")\"" ;;
+  esac
+done < "$OUT"
+
+infected=$(sed -n 's/^Infected files: \([0-9]*\).*/\1/p' "$OUT" | tail -1)
+scanned=$(sed -n 's/^Scanned files: \([0-9]*\).*/\1/p' "$OUT" | tail -1)
+[ "$rc" -ge 2 ] && ev "ERROR rc=$rc"
+ev "SCAN_DONE target=\"$(q "$TARGET")\" infected=${infected:-0} scanned=${scanned:-0} sigs=\"$(q "$SIGS")\" rc=$rc"
+
+find "$LOGDIR" -name 'scan-*.log' -mtime +180 -delete 2>/dev/null
+exit "$rc"

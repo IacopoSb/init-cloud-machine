@@ -8,9 +8,19 @@ Per eseguire (come root):
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/IacopoSb/init-cloud-machine/main/init.sh)"
 ```
 
-Lo script scarica a runtime gli asset da `assets/` del repo (README.txt e server-manager.sh).
+Lo script scarica a runtime gli asset da `assets/` del repo (README.txt, server-manager.sh e il pacchetto ClamAV + Wazuh in `assets/wazuh/`).
 
 ## Changelog
+
+### 1.4.0
+
+Nuova sezione **11b — ClamAV + agent Wazuh** (Debian/Ubuntu e RHEL/AlmaLinux, anche in `init-mvps.sh`). Scarica ed esegue `assets/wazuh/install-host.sh --no-enroll --class auto`, lo stesso script usato per il rollout manuale sui server esistenti:
+
+- **ClamAV** con aggiornamento firme e scansione settimanale (`clamav-scan.timer`, domenica notte, sfalsata) **solo se la RAM totale è ≥ 3 GB** (classe A); sotto quella soglia le firme in memoria (1–1,5 GB) metterebbero in crisi la macchina e si installa solo l'agent (classe C).
+- **Agent Wazuh** alla stessa versione del manager (4.14.9, repo disattivato dopo l'installazione), **non registrato**: la registrazione richiede la password di enrollment (Vaultwarden) e il nome del target Warpgate, e si fa dopo con `sudo wazuh-enroll <nome> <gruppo>` (installato in `/usr/local/sbin`).
+- I passi per completare la configurazione sono stampati in fondo all'output e aggiunti al `README.txt` del server.
+
+Un errore in questa sezione non interrompe il bootstrap: il riepilogo lo segnala (`ClamAV + Wazuh`).
 
 ### 1.3.1
 
